@@ -22,6 +22,7 @@ bool is_drive_mounted(const std::string& drive) {
     struct mntent* entry;
     bool mounted = false;
     while ((entry = getmntent(mtab)) != nullptr) {
+        std::cout << entry->mnt_dir << std::endl;
         if (std::string(entry->mnt_dir) == drive) {
             mounted = true;
             break;
