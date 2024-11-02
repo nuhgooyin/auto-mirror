@@ -28,7 +28,6 @@ bool is_drive_mounted(const std::string& drive) {
             break;
         }
     }
-    printf("%d\n", mounted);
 
     endmntent(mtab);
     return mounted;
@@ -67,14 +66,24 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    int wd = inotify_add_watch(fd, src_dir.c_str(), IN_CREATE | IN_DELETE | IN_MODIFY | IN_MOVED_FROM | IN_MOVED_TO);
-    if (wd < 0) {
+    // Add watch for the source directory
+    int src_wd = inotify_add_watch(fd, src_dir.c_str(), IN_CREATE | IN_DELETE | IN_MODIFY | IN_MOVED_FROM | IN_MOVED_TO);
+    if (src_wd < 0) {
         std::cerr << "Error adding watch to " << src_dir << std::endl;
         close(fd);
         return 1;
     }
 
-    std::cout << "Watching " << src_dir << " for changes..." << std::endl;
+    // Add watch for /etc/mtab to monitor mount events
+    int mtab_wd = inotify_add_watch(fd, "/etc/mtab", IN_MODIFY);
+    if (mtab_wd < 0) {
+        std::cerr << "Error adding watch to /etc/mtab" << std::endl;
+        inotify_rm_watch(fd, src_wd);
+        close(fd);
+        return 1;
+    }
+
+    std::cout << "Watching " << src_dir << " for changes and monitoring drive mounts..." << std::endl;
     
     // Initial sync
     sync_to_all_drives(src_dir, dest_drives);
@@ -91,17 +100,23 @@ int main(int argc, char* argv[]) {
         while (i < length) {
             struct inotify_event* event = (struct inotify_event*)&buffer[i];
             if (event->len) {
-                if (event->mask & (IN_CREATE | IN_DELETE | IN_MODIFY | IN_MOVED_FROM | IN_MOVED_TO)) {
+                if (event->wd == src_wd && 
+                    (event->mask & (IN_CREATE | IN_DELETE | IN_MODIFY | IN_MOVED_FROM | IN_MOVED_TO))) {
                     std::cout << "Change detected in " << src_dir << std::endl;
                     sync_to_all_drives(src_dir, dest_drives);
                     break;  // Only sync once per batch of events
+                } else if (event->wd == mtab_wd && (event->mask & IN_MODIFY)) {
+                    std::cout << "Mount event detected, checking drives..." << std::endl;
+                    sync_to_all_drives(src_dir, dest_drives);
+                    break;
                 }
             }
             i += EVENT_SIZE + event->len;
         }
     }
 
-    inotify_rm_watch(fd, wd);
+    inotify_rm_watch(fd, src_wd);
+    inotify_rm_watch(fd, mtab_wd);
     close(fd);
     return 0;
 }
