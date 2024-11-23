@@ -24,6 +24,7 @@ class SyncManager:
         self.monitor = pyudev.Monitor.from_netlink(self.context)
         self.monitor.filter_by('block')
         self.MAX_STORAGE_LIMIT = 0.95  # 95% usage threshold
+        self.MIN_FREE_SPACE = 1024 * 1024 * 10  # 10MB minimum free space
 
     def get_available_space(self, drive):
         usage = shutil.disk_usage(drive)
@@ -31,7 +32,7 @@ class SyncManager:
 
     def has_enough_space(self, drive, required_space):
         available = self.get_available_space(drive)
-        return available >= required_space
+        return available >= (required_space + self.MIN_FREE_SPACE)
 
     def initial_sync(self):
         for drive in self.mirror_drives:
@@ -48,17 +49,69 @@ class SyncManager:
                 return True
         return False
 
+    def get_sorted_directories(self, path):
+        """Return directories sorted by modification time (newest first)"""
+        dirs = []
+        for item in Path(path).iterdir():
+            if item.is_dir():
+                dirs.append((item, item.stat().st_mtime))
+        return [d[0] for d in sorted(dirs, key=lambda x: x[1], reverse=True)]
+
     def sync_directory(self, drive):
         destination = Path(drive) / self.target_dir.name
         if not destination.exists():
             try:
-                shutil.copytree(self.target_dir, destination)
-                print(f"Copied {self.target_dir} to {destination}")
+                # Instead of copying entire directory, copy files/folders until space runs out
+                destination.mkdir(parents=True, exist_ok=True)
+                self.copy_with_space_constraint(self.target_dir, destination)
             except Exception as e:
-                print(f"Error copying to {destination}: {e}")
+                print(f"Error creating destination directory {destination}: {e}")
         else:
-            self.copy_missing_files(self.target_dir, destination)
+            self.copy_with_space_constraint(self.target_dir, destination)
             self.delete_extra_files(self.target_dir, destination)
+
+    def copy_with_space_constraint(self, src, dest):
+        """Copy files and directories respecting space constraints"""
+        # First, handle files in the root directory
+        for item in src.iterdir():
+            if item.is_file():
+                self.copy_file_if_space_available(item, dest / item.name, dest.parent)
+
+        # Then handle subdirectories, newest first
+        for dir_path in self.get_sorted_directories(src):
+            rel_path = dir_path.relative_to(src)
+            dest_dir = dest / rel_path
+            dir_size = self.calculate_directory_size(dir_path)
+            
+            if not dest_dir.exists():
+                if self.has_enough_space(dest.parent, dir_size):
+                    try:
+                        print(f"Copying directory {dest_dir}")
+                        shutil.copytree(dir_path, dest_dir)
+                        print(f"Copied directory {dest_dir}")
+                    except Exception as e:
+                        print(f"Error copying directory {dest_dir}: {e}")
+                else:
+                    print(f"Not enough space for directory {dest_dir}. Skipping.")
+                    continue
+            else:
+                # Update existing directory contents
+                self.copy_missing_files(dir_path, dest_dir)
+
+    def copy_file_if_space_available(self, src_file, dest_file, drive):
+        """Copy a single file if there's enough space available"""
+        if not dest_file.exists() or file_checksum(src_file) != file_checksum(dest_file):
+            try:
+                file_size = src_file.stat().st_size
+                if self.has_enough_space(drive, file_size):
+                    print(f"Copying file {dest_file}")
+                    dest_file.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(src_file, dest_file)
+                    print(f"Copied file {dest_file}")
+                else:
+                    print(f"Not enough space to copy file {dest_file}. Skipping.")
+            except Exception as e:
+                print(f"Error copying file {dest_file}: {e}")
 
     def copy_missing_files(self, src, dest):
         for root, dirs, files in os.walk(src):
