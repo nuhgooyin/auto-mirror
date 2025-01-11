@@ -43,6 +43,7 @@ class SyncManager:
 
     def is_drive_mounted(self, drive):
         partitions = psutil.disk_partitions(all=True)
+        print(partitions)
         for partition in partitions:
             if os.path.realpath(drive) == os.path.realpath(partition.mountpoint):
                 return True
@@ -114,20 +115,6 @@ class SyncManager:
                         print(f"Deleted directory {dest_subdir}")
                     except Exception as e:
                         print(f"Error deleting directory {dest_subdir}: {e}")
-
-    def monitor_drives_old(self):
-        while True:
-            for drive in self.mirror_drives:
-                if self.is_drive_mounted(drive) and drive not in self.mounted_drives:
-                    print(f"Drive {drive} mounted.")
-                    with self.lock:
-                        self.mounted_drives.add(drive)
-                        self.sync_directory(drive)
-                elif not self.is_drive_mounted(drive) and drive in self.mounted_drives:
-                    print(f"Drive {drive} unmounted.")
-                    with self.lock:
-                        self.mounted_drives.remove(drive)
-            time.sleep(5)
 
     def monitor_drives(self):
         observer = pyudev.MonitorObserver(self.monitor, callback=self.device_event)
