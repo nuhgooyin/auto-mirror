@@ -13,10 +13,10 @@ import sys
 import inquirer
 
 class SyncManager:
-    def __init__(self, target_dir, mirror_drives):
-        self.target_dir = Path(target_dir).resolve()
-        if not self.target_dir.exists():
-            print(f"Error: Target directory '{self.target_dir}' does not exist.")
+    def __init__(self, dir_to_watch, mirror_drives):
+        self.dir_to_watch = Path(dir_to_watch).resolve()
+        if not self.dir_to_watch.exists():
+            print(f"Error: Directory to watch '{self.dir_to_watch}' does not exist.")
             sys.exit(1)
         self.mirror_drives = mirror_drives
         self.mounted_drives = set()
@@ -28,10 +28,13 @@ class SyncManager:
 
     def get_available_space(self, drive):
         usage = shutil.disk_usage(drive)
+        print(usage)
         return usage.free
 
     def has_enough_space(self, drive, required_space):
         available = self.get_available_space(drive)
+        # TODO
+        print(f"Drive {drive} has {available}. Required space is {required_space}")
         return available >= required_space
 
     def initial_sync(self):
@@ -55,16 +58,20 @@ class SyncManager:
 
 # TODO: CHECK MAX SIZE ISSUES
     def sync_directory(self, drive):
-        destination = Path(drive) / self.target_dir.name
+        destination = Path(drive) / self.dir_to_watch.name
         if not destination.exists():
             try:
-                shutil.copytree(self.target_dir, destination)
-                print(f"Copied {self.target_dir} to {destination}")
+                # Create empty directory first
+                destination.mkdir(parents=True, exist_ok=True)
+                # Use copy_missing_files to populate it
+                self.copy_missing_files(self.dir_to_watch, destination)
+                print(f"Drive {drive} synced")
             except Exception as e:
                 print(f"Error copying to {destination}: {e}")
         else:
-            self.copy_missing_files(self.target_dir, destination)
-            self.delete_extra_files(self.target_dir, destination)
+            self.copy_missing_files(self.dir_to_watch, destination)
+            self.delete_extra_files(self.dir_to_watch, destination)
+            print(f"Drive {drive} synced")
 
     def copy_missing_files(self, src, dest):
         for root, dirs, files in os.walk(src):
@@ -155,11 +162,11 @@ class SyncManager:
     def update_changes(self, src_path):
         with self.lock:
             for drive in list(self.mounted_drives):
-                destination = Path(drive) / self.target_dir.name
+                destination = Path(drive) / self.dir_to_watch.name
                 try:
-                    relative_path = Path(src_path).relative_to(self.target_dir)
+                    relative_path = Path(src_path).relative_to(self.dir_to_watch)
                 except ValueError:
-                    # src_path is not under target_dir
+                    # src_path is not under dir_to_watch
                     continue
                 dest_path = destination / relative_path
                 src_path_obj = Path(src_path)
@@ -178,6 +185,7 @@ class SyncManager:
                                 print(f"Error copying directory {dest_path}: {e}")
                         else:
                             self.copy_missing_files(src_path_obj, dest_path)
+                            print(f"Drive {drive} synced")
                     else:
                         dest_path.parent.mkdir(parents=True, exist_ok=True)
                         try:
@@ -204,14 +212,15 @@ class SyncManager:
                             print(f"Error deleting {dest_path}: {e}")
             # After updating changes, ensure no extra files exist
             for drive in list(self.mounted_drives):
-                destination = Path(drive) / self.target_dir.name
-                self.delete_extra_files(self.target_dir, destination)
+                destination = Path(drive) / self.dir_to_watch.name
+                self.delete_extra_files(self.dir_to_watch, destination)
+                print(f"Drive {drive} synced")
 
     def handle_move(self, src_path, dest_path):
-        relative_path = Path(src_path).relative_to(self.target_dir)
-        relative_new_path = Path(dest_path).relative_to(self.target_dir)
+        relative_path = Path(src_path).relative_to(self.dir_to_watch)
+        relative_new_path = Path(dest_path).relative_to(self.dir_to_watch)
         for drive in list(self.mounted_drives):
-            destination = Path(drive) / self.target_dir.name
+            destination = Path(drive) / self.dir_to_watch.name
             old_dest_path = destination / relative_path
             new_dest_path = destination / relative_new_path
             if old_dest_path.exists():
@@ -313,15 +322,15 @@ def get_available_directories(current_path='/home'):
     return directories
 
 def interactive_selection():
-    """Prompt user to select target directory and mirror drives."""
+    """Prompt user to select directory to watch and mirror drives."""
     current_path = '/home'
     path_history = [current_path]  # Add this line to store history
     
     while True:
         questions = [
             inquirer.List(
-                'target_directory',
-                message='Navigate and select the target directory (select [SELECT] option to choose current directory)',
+                'dir_to_watch',
+                message='Navigate and select the directory to watch (select [SELECT] option to choose current directory)',
                 choices=get_available_directories(current_path),
                 # Add these parameters to enable history navigation
                 carousel=True,
@@ -333,17 +342,17 @@ def interactive_selection():
         if not answer:
             sys.exit(1)
             
-        selected = answer['target_directory']
+        selected = answer['dir_to_watch']
         
         # Check if user selected current directory
         if selected['value'].startswith('SELECT:'):
-            target_dir = selected['value'].split(':', 1)[1]
+            dir_to_watch = selected['value'].split(':', 1)[1]
             break
         else:
             current_path = selected['value']
             path_history.append(current_path)  # Add new path to history
     
-    # After selecting target directory, prompt for mirror drives
+    # After selecting directory to watch, prompt for mirror drives
     questions = [
         inquirer.Checkbox(
             'mirror_drives',
@@ -365,7 +374,7 @@ def interactive_selection():
     for answer in answers['mirror_drives']:
         cleaned_ans.append(answer['value'])
 
-    return target_dir, cleaned_ans
+    return dir_to_watch, cleaned_ans
 
 def parse_arguments():
     parser = argparse.ArgumentParser(
@@ -376,14 +385,14 @@ Examples:
   python %(prog)s -i
   
   # Terminal mode:
-  python %(prog)s --target-directory /path/to/dir --mirror-drives /mnt/drive1 /mnt/drive2
+  python %(prog)s --dir-to-watch /path/to/dir --mirror-drives /mnt/drive1 /mnt/drive2
         """,
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument("--interactive", "-i", action="store_true", 
                        help="Use interactive mode to select directories and drives")
-    parser.add_argument("--target-directory", 
-                       help="Path to the target directory to monitor")
+    parser.add_argument("--dir-to-watch", 
+                       help="Path to the directory to monitor/watch")
     parser.add_argument("--mirror-drives", nargs='+', 
                        help="List of mirror drive mount points")
     
@@ -396,8 +405,8 @@ Examples:
     
     if args.interactive:
         return interactive_selection()
-    elif args.target_directory and args.mirror_drives:
-        return args.target_directory, args.mirror_drives
+    elif args.dir_to_watch and args.mirror_drives:
+        return args.dir_to_watch, args.mirror_drives
     else:
         return interactive_selection()
 
@@ -411,7 +420,7 @@ def main():
 
     event_handler = DirectoryEventHandler(sync_manager)
     observer = Observer()
-    observer.schedule(event_handler, path=str(sync_manager.target_dir), recursive=True)
+    observer.schedule(event_handler, path=str(sync_manager.dir_to_watch), recursive=True)
     observer.start()
 
     print("Monitoring started. Press Ctrl+C to stop.")
